@@ -1,0 +1,15 @@
+node_modules/
+dist/
+dist-native/
+.build/
+.swiftpm/
+.codex/
+.DS_Store
+*.xcuserstate
+npm-debug.log*
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
