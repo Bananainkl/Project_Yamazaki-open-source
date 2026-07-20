@@ -1,6 +1,36 @@
 # Yamazaki
 
-Yamazaki is a free, local, native macOS menu-bar utility for region OCR and screenshot translation. It uses Apple system frameworks and keeps the primary OCR workflow clipboard-first.
+<p align="center">
+  <img src="docs/images/social-preview.jpg" alt="Yamazaki — private on-device OCR and translation" width="100%">
+</p>
+
+<p align="center">
+  <a href="#quick-start"><strong>Quick Start</strong></a> ·
+  <a href="https://github.com/Bananainkl/Project_Yamazaki-open-source/releases">Releases</a> ·
+  <a href="https://github.com/Bananainkl/Project_Yamazaki-open-source/issues">Issues</a> ·
+  <a href="https://github.com/Bananainkl/Project_Yamazaki-open-source/discussions">Discussions</a>
+</p>
+
+<p align="center">
+  <img alt="MIT" src="https://img.shields.io/badge/license-MIT-2563eb">
+  <img alt="Swift" src="https://img.shields.io/badge/Swift-native-f05138?logo=swift&logoColor=white">
+  <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-111827?logo=apple">
+  <img alt="On-device OCR" src="https://img.shields.io/badge/OCR-on_device-22c55e">
+  <img alt="GitHub stars" src="https://img.shields.io/github/stars/Bananainkl/Project_Yamazaki-open-source?style=flat">
+</p>
+
+Yamazaki is a free, local, native macOS menu-bar utility for region OCR and screenshot translation. Select any area of the screen, recognize multilingual text with Apple Vision, and copy the result without sending the image to a custom OCR server.
+
+## Why Yamazaki
+
+- **Fast keyboard workflow**: region capture → OCR or translation → clipboard.
+- **Private by design**: OCR runs locally through Apple Vision.
+- **Multilingual**: Simplified Chinese, Traditional Chinese, English, Japanese, numbers, and symbols.
+- **Truly native**: a lightweight menu-bar app built with Swift, AppKit, and system frameworks.
+
+<p align="center">
+  <img src="docs/images/product-screenshot.jpg" alt="Yamazaki native macOS settings" width="72%">
+</p>
 
 Current version: `0.6.8`.
 
@@ -23,6 +53,15 @@ Yamazaki does not stay in the Dock. Open its settings and commands from the menu
 - macOS 15 or later for screenshot translation
 - Xcode / Swift 5.9 or later for development
 - Screen Recording permission for region capture
+
+## Quick Start
+
+```bash
+git clone https://github.com/Bananainkl/Project_Yamazaki-open-source.git
+cd Project_Yamazaki-open-source
+swift build
+./script/build_and_run.sh
+```
 
 ## Build and Run
 
