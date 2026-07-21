@@ -1,12 +1,12 @@
-# Yamazaki 0.6.8
+# Yamazaki 0.6.9
 
-Initial public source release of the native macOS menu-bar OCR and screenshot-translation utility.
+This release fixes duplicate app processes caused by enabling automatic restart while Yamazaki was already running.
 
-## Highlights
+## Changes
 
-- Local region OCR through Apple Vision.
-- Screenshot translation through the macOS Translation framework.
-- Configurable global shortcuts, clipboard-first results, and launch controls.
-- MIT-licensed source and redistribution-safe packaging documentation.
+- Auto-restart now uses a lightweight watchdog that checks whether Yamazaki is already running before reopening it.
+- A second application-level guard rejects later duplicate launches.
+- Existing `com.itou.yamazaki.keepalive` launch agents are migrated to the new watchdog configuration.
+- Local install scripts stop launch agents before replacing the app bundle.
 
 Third-party screenshot applications are not included in this source repository or its DMG workflow.

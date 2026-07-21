@@ -1043,6 +1043,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private let statusMenuItem = NSMenuItem(title: LocalizedText.tr(.waitingForShortcut), action: nil, keyEquivalent: "")
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    guard isPrimaryApplicationInstance else {
+      NSApp.terminate(nil)
+      return
+    }
+
     NSApp.setActivationPolicy(.accessory)
     settingsModel.shortcutText = hotKey.displayText
     settingsModel.translationShortcutText = translateHotKey.displayText
@@ -1054,6 +1059,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     configureStatusItem()
     registerHotKey()
+  }
+
+  private var isPrimaryApplicationInstance: Bool {
+    guard let bundleIdentifier = Bundle.main.bundleIdentifier else { return true }
+    let currentProcessIdentifier = ProcessInfo.processInfo.processIdentifier
+    let runningProcessIdentifiers = NSRunningApplication
+      .runningApplications(withBundleIdentifier: bundleIdentifier)
+      .map(\.processIdentifier)
+    return runningProcessIdentifiers.min() == currentProcessIdentifier
   }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -4039,11 +4053,17 @@ enum AppPreferences {
 }
 
 enum LaunchAgentService {
-  private static let label = "com.itou.yamazaki.keepalive"
+  private static let label = "com.itou.yamazaki.watchdog"
+  private static let legacyLabel = "com.itou.yamazaki.keepalive"
 
   private static var agentURL: URL {
     FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+  }
+
+  private static var legacyAgentURL: URL {
+    FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("Library/LaunchAgents/\(legacyLabel).plist")
   }
 
   private static var launchdDomain: String {
@@ -4052,12 +4072,12 @@ enum LaunchAgentService {
 
   static func setStartAtLoginEnabled(_ isEnabled: Bool) {
     AppPreferences.startAtLogin = isEnabled
-    refreshLaunchAgent(loadNow: AppPreferences.autoRestart)
+    refreshLaunchAgent()
   }
 
   static func setAutoRestartEnabled(_ isEnabled: Bool) {
     AppPreferences.autoRestart = isEnabled
-    refreshLaunchAgent(loadNow: isEnabled)
+    refreshLaunchAgent()
   }
 
   static func refreshAutoRestartAgent() {
@@ -4065,39 +4085,58 @@ enum LaunchAgentService {
   }
 
   static func refreshLaunchAgent() {
-    refreshLaunchAgent(loadNow: false)
-  }
-
-  private static func refreshLaunchAgent(loadNow: Bool) {
     guard AppPreferences.startAtLogin || AppPreferences.autoRestart else {
       unloadAndRemove()
       return
     }
 
-    if loadNow {
-      installAndLoad()
-      return
-    }
-
-    writePlist()
+    installAndLoad()
   }
 
   private static func installAndLoad() {
     guard writePlist() else { return }
-    runLaunchctl(arguments: ["bootout", launchdDomain, agentURL.path])
+    runLaunchctl(arguments: ["bootout", "\(launchdDomain)/\(label)"])
     runLaunchctl(arguments: ["bootstrap", launchdDomain, agentURL.path])
+    removeLegacyAgent()
   }
 
   @discardableResult
   private static func writePlist() -> Bool {
-    guard let executablePath = preferredExecutablePath() else { return false }
+    guard let appBundlePath = preferredAppBundlePath() else { return false }
+    let mode = AppPreferences.autoRestart ? "watch" : "launch-once"
+    let watcherScript = """
+    app_path="$1"
+    mode="$2"
+
+    launch_if_needed() {
+      if ! /usr/bin/pgrep -x Yamazaki >/dev/null 2>&1; then
+        /usr/bin/open -g "$app_path"
+      fi
+    }
+
+    launch_if_needed
+    if [ "$mode" = "watch" ]; then
+      while :; do
+        /bin/sleep 2
+        launch_if_needed
+      done
+    fi
+    """
     let plist: [String: Any] = [
       "Label": label,
-      "ProgramArguments": [executablePath],
+      "ProgramArguments": [
+        "/bin/sh",
+        "-c",
+        watcherScript,
+        "yamazaki-watchdog",
+        appBundlePath,
+        mode
+      ],
       "RunAtLoad": true,
       "KeepAlive": AppPreferences.autoRestart,
       "LimitLoadToSessionType": "Aqua",
-      "ProcessType": "Interactive"
+      "ProcessType": "Background",
+      "ThrottleInterval": 2
     ]
 
     do {
@@ -4115,16 +4154,23 @@ enum LaunchAgentService {
   }
 
   private static func unloadAndRemove() {
-    runLaunchctl(arguments: ["bootout", launchdDomain, agentURL.path])
+    runLaunchctl(arguments: ["bootout", "\(launchdDomain)/\(label)"])
     try? FileManager.default.removeItem(at: agentURL)
+    removeLegacyAgent()
   }
 
-  private static func preferredExecutablePath() -> String? {
-    let installedPath = "/Applications/\(ProductInfo.appName).app/Contents/MacOS/Yamazaki"
-    if FileManager.default.isExecutableFile(atPath: installedPath) {
+  private static func preferredAppBundlePath() -> String? {
+    let installedPath = "/Applications/\(ProductInfo.appName).app"
+    if FileManager.default.fileExists(atPath: installedPath) {
       return installedPath
     }
-    return Bundle.main.executablePath
+    let bundlePath = Bundle.main.bundlePath
+    return FileManager.default.fileExists(atPath: bundlePath) ? bundlePath : nil
+  }
+
+  private static func removeLegacyAgent() {
+    try? FileManager.default.removeItem(at: legacyAgentURL)
+    runLaunchctlAsync(arguments: ["bootout", "\(launchdDomain)/\(legacyLabel)"])
   }
 
   private static func runLaunchctl(arguments: [String]) {
@@ -4134,6 +4180,17 @@ enum LaunchAgentService {
     do {
       try process.run()
       process.waitUntilExit()
+    } catch {
+      NSLog("launchctl failed: \(error.localizedDescription)")
+    }
+  }
+
+  private static func runLaunchctlAsync(arguments: [String]) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+    process.arguments = arguments
+    do {
+      try process.run()
     } catch {
       NSLog("launchctl failed: \(error.localizedDescription)")
     }

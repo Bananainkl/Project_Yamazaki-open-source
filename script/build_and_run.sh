@@ -19,7 +19,10 @@ APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON_SOURCE="$ROOT_DIR/Resources/AppIcon.icns"
 INSTALL_BUNDLE="/Applications/$DISPLAY_NAME.app"
+LAUNCHD_DOMAIN="gui/$(id -u)"
 
+/bin/launchctl bootout "$LAUNCHD_DOMAIN/com.itou.yamazaki.watchdog" >/dev/null 2>&1 || true
+/bin/launchctl bootout "$LAUNCHD_DOMAIN/com.itou.yamazaki.keepalive" >/dev/null 2>&1 || true
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 pkill -x "FreeScanOCR" >/dev/null 2>&1 || true
 
@@ -69,7 +72,7 @@ PLIST
 /usr/bin/xattr -dr com.apple.quarantine "$APP_BUNDLE" >/dev/null 2>&1 || true
 
 open_app() {
-  /usr/bin/open -n "$APP_BUNDLE"
+  /usr/bin/open "$APP_BUNDLE"
 }
 
 case "$MODE" in
@@ -86,7 +89,7 @@ case "$MODE" in
     rm -rf "$INSTALL_BUNDLE"
     cp -R "$APP_BUNDLE" "$INSTALL_BUNDLE"
     /usr/bin/xattr -dr com.apple.quarantine "$INSTALL_BUNDLE" >/dev/null 2>&1 || true
-    /usr/bin/open -n "$INSTALL_BUNDLE"
+    /usr/bin/open "$INSTALL_BUNDLE"
     ;;
   --debug|debug)
     lldb -- "$APP_BINARY"
