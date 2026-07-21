@@ -5,10 +5,10 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start"><strong>Quick Start</strong></a> ·
-  <a href="https://github.com/Bananainkl/Project_Yamazaki-open-source/releases">Releases</a> ·
-  <a href="https://github.com/Bananainkl/Project_Yamazaki-open-source/issues">Issues</a> ·
-  <a href="https://github.com/Bananainkl/Project_Yamazaki-open-source/discussions">Discussions</a>
+  <a href="#quick-start"><strong>快速开始 / Quick Start</strong></a> ·
+  <a href="https://github.com/Bananainkl/Project_Yamazaki-open-source/releases">版本发布 / Releases</a> ·
+  <a href="https://github.com/Bananainkl/Project_Yamazaki-open-source/issues">问题与建议 / Issues</a> ·
+  <a href="https://github.com/Bananainkl/Project_Yamazaki-open-source/discussions">讨论区 / Discussions</a>
 </p>
 
 <p align="center">
@@ -18,6 +18,17 @@
   <img alt="On-device OCR" src="https://img.shields.io/badge/OCR-on_device-22c55e">
   <img alt="GitHub stars" src="https://img.shields.io/github/stars/Bananainkl/Project_Yamazaki-open-source?style=flat">
 </p>
+
+## 中文简介
+
+Yamazaki 是一款免费、本地运行的原生 macOS 菜单栏 OCR 与截图翻译工具。选择屏幕上的任意区域，即可通过 Apple Vision 识别多语言文字并复制结果，无需把截图发送到自建或第三方 OCR 服务器。
+
+- 快捷键完成“区域截图 → OCR／翻译 → 复制到剪贴板”的快速流程。
+- 支持简体中文、繁体中文、英文、日文、数字与常用符号。
+- OCR 在设备本地运行；截图翻译使用 macOS Translation 框架。
+- 基于 Swift、AppKit 和系统框架构建，保持轻量、原生并注重隐私。
+
+## English Overview
 
 Yamazaki is a free, local, native macOS menu-bar utility for region OCR and screenshot translation. Select any area of the screen, recognize multilingual text with Apple Vision, and copy the result without sending the image to a custom OCR server.
 
