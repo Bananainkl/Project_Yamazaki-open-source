@@ -1,12 +1,14 @@
-# Yamazaki 0.6.9
+# Yamazaki 0.7.0
 
-This release fixes duplicate app processes caused by enabling automatic restart while Yamazaki was already running.
+This release restores Yamazaki OCR compatibility after upgrading to macOS 27.
 
 ## Changes
 
-- Auto-restart now uses a lightweight watchdog that checks whether Yamazaki is already running before reopening it.
-- A second application-level guard rejects later duplicate launches.
-- Existing `com.itou.yamazaki.keepalive` launch agents are migrated to the new watchdog configuration.
-- Local install scripts stop launch agents before replacing the app bundle.
+- Rebuilt with Xcode 27 and the macOS 27 SDK for the updated system text-recognition engine.
+- Build caches are isolated by SDK version and stored outside FileProvider-backed folders.
+- Release packaging strips extended metadata and verifies the app signature before creating the DMG.
+- Verification mode now launches the exact newly built bundle.
+
+After replacing an older ad-hoc-signed build, macOS may require Screen Recording access to be granted again. See the included installation guide for the reset command and permission steps.
 
 Third-party screenshot applications are not included in this source repository or its DMG workflow.

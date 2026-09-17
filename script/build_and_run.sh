@@ -20,14 +20,16 @@ INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON_SOURCE="$ROOT_DIR/Resources/AppIcon.icns"
 INSTALL_BUNDLE="/Applications/$DISPLAY_NAME.app"
 LAUNCHD_DOMAIN="gui/$(id -u)"
+SDK_VERSION="$(/usr/bin/xcrun --sdk macosx --show-sdk-version)"
+BUILD_SCRATCH="${TMPDIR:-/tmp}/YamazakiBuild-macos-$SDK_VERSION-$(uname -m)"
 
 /bin/launchctl bootout "$LAUNCHD_DOMAIN/com.itou.yamazaki.watchdog" >/dev/null 2>&1 || true
 /bin/launchctl bootout "$LAUNCHD_DOMAIN/com.itou.yamazaki.keepalive" >/dev/null 2>&1 || true
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 pkill -x "FreeScanOCR" >/dev/null 2>&1 || true
 
-swift build
-BUILD_BINARY="$(swift build --show-bin-path)/$APP_NAME"
+swift build --scratch-path "$BUILD_SCRATCH"
+BUILD_BINARY="$(swift build --scratch-path "$BUILD_SCRATCH" --show-bin-path)/$APP_NAME"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
@@ -68,11 +70,16 @@ cat >"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
-/usr/bin/codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null 2>&1 || true
+# FileProvider/Finder metadata can invalidate strict code-signature checks on macOS 27.
+/usr/bin/xattr -cr "$APP_BUNDLE" >/dev/null 2>&1 || true
+/usr/bin/xattr -d com.apple.FinderInfo "$APP_BUNDLE" >/dev/null 2>&1 || true
+/usr/bin/xattr -d 'com.apple.fileprovider.fpfs#P' "$APP_BUNDLE" >/dev/null 2>&1 || true
+/usr/bin/codesign --force --deep --sign - "$APP_BUNDLE"
+/usr/bin/codesign --verify --deep --strict "$APP_BUNDLE"
 /usr/bin/xattr -dr com.apple.quarantine "$APP_BUNDLE" >/dev/null 2>&1 || true
 
 open_app() {
-  /usr/bin/open "$APP_BUNDLE"
+  /usr/bin/open -n "$APP_BUNDLE"
 }
 
 case "$MODE" in

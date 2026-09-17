@@ -11,8 +11,8 @@ VERSION="${1:-v$APP_VERSION-$BUILD_STAMP}"
 DIST_DIR="$ROOT_DIR/dist-native"
 APP_BUNDLE="$DIST_DIR/$DISPLAY_NAME.app"
 INSTRUCTIONS_SOURCE="$ROOT_DIR/docs/INSTALLATION_AND_USAGE.md"
-STAGING_DIR="$DIST_DIR/dmg-staging"
-RW_DMG="$DIST_DIR/$DISPLAY_NAME-$VERSION-rw.dmg"
+STAGING_DIR="${TMPDIR:-/tmp}/Yamazaki-dmg-staging-$BUILD_STAMP"
+RW_DMG="${TMPDIR:-/tmp}/$DISPLAY_NAME-$VERSION-rw.dmg"
 FINAL_DMG="$DIST_DIR/$DISPLAY_NAME-$VERSION.dmg"
 VOLUME_NAME="$DISPLAY_NAME"
 
@@ -31,9 +31,13 @@ fi
 
 rm -rf "$STAGING_DIR" "$RW_DMG"
 mkdir -p "$STAGING_DIR"
-ditto "$APP_BUNDLE" "$STAGING_DIR/$DISPLAY_NAME.app"
+ditto --norsrc --noextattr "$APP_BUNDLE" "$STAGING_DIR/$DISPLAY_NAME.app"
 cp "$INSTRUCTIONS_SOURCE" "$STAGING_DIR/Yamazaki-安装与使用说明.md"
 ln -s /Applications "$STAGING_DIR/Applications"
+
+/usr/bin/xattr -cr "$STAGING_DIR/$DISPLAY_NAME.app" >/dev/null 2>&1 || true
+/usr/bin/codesign --force --deep --sign - "$STAGING_DIR/$DISPLAY_NAME.app"
+/usr/bin/codesign --verify --deep --strict "$STAGING_DIR/$DISPLAY_NAME.app"
 
 hdiutil create \
   -volname "$VOLUME_NAME" \

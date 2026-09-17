@@ -2346,11 +2346,13 @@ struct LiquidWindowBackground: View {
         )
       )
       .overlay(
-        LinearGradient(
-          colors: [Color.white.opacity(colorScheme == .dark ? 0.08 : 0.20), .clear],
-          startPoint: .top,
-          endPoint: .center
-        )
+        Group {
+          LinearGradient(
+            colors: [Color.white.opacity(colorScheme == .dark ? 0.08 : 0.20), .clear],
+            startPoint: .top,
+            endPoint: .center
+          )
+        }
         .blendMode(.plusLighter)
       )
       .ignoresSafeArea()

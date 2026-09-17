@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 - 2026-09-17
+
+- Restored OCR compatibility on macOS 27 by rebuilding against Xcode 27 and the macOS 27 SDK.
+- Isolated Swift build caches by SDK version so system upgrades cannot silently reuse stale compiler output.
+- Moved build caches and DMG staging outside FileProvider-backed project folders to avoid build database and extended-attribute corruption.
+- Added strict signature verification and metadata-free DMG staging before release packaging.
+- Updated verification launches to open the exact newly built app bundle.
+
 ## 0.6.9 - 2026-07-21
 
 - Fixed auto-restart launching a second Yamazaki process when the app was already running.
