@@ -94,8 +94,10 @@ case "$MODE" in
       ditto "$INSTALL_BUNDLE" "$ARCHIVE_BUNDLE"
     fi
     rm -rf "$INSTALL_BUNDLE"
-    cp -R "$APP_BUNDLE" "$INSTALL_BUNDLE"
+    ditto --norsrc --noextattr "$APP_BUNDLE" "$INSTALL_BUNDLE"
     /usr/bin/xattr -dr com.apple.quarantine "$INSTALL_BUNDLE" >/dev/null 2>&1 || true
+    /usr/bin/xattr -cr "$INSTALL_BUNDLE" >/dev/null 2>&1 || true
+    /usr/bin/codesign --verify --deep --strict "$INSTALL_BUNDLE"
     /usr/bin/open "$INSTALL_BUNDLE"
     ;;
   --debug|debug)

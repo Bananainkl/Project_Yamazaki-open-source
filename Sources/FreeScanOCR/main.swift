@@ -2,6 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 import Combine
 import CoreGraphics
+import OSLog
 import SwiftUI
 import Translation
 import _Translation_SwiftUI
@@ -4314,6 +4315,8 @@ struct RecognizedTextLine: Identifiable {
 }
 
 final class OCRService {
+  private let logger = Logger(subsystem: "com.itou.yamazaki", category: "OCR")
+
   private struct OCRLine {
     let text: String
     let box: CGRect
@@ -4348,21 +4351,20 @@ final class OCRService {
   }
 
   func recognizePositionedText(in image: NSImage) throws -> [RecognizedTextLine] {
-    guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+    guard let cgImage = normalizedCGImage(from: image) else {
       throw OCRError.invalidImage
     }
     let rotatedImage = AppPreferences.textDirection == .vertical ? rotatedClockwise(cgImage) : nil
     let imageForRecognition = rotatedImage ?? cgImage
 
     let lines: [OCRLine]
-    if AppPreferences.languageMode == .globalAuto {
-      lines = try recognizeGlobalAuto(in: imageForRecognition).lines
-    } else {
-      lines = try recognizeLines(
-        in: imageForRecognition,
-        languages: AppPreferences.languageMode.recognitionLanguages,
-        preservesSymbols: AppPreferences.languageMode.preservesSymbols
-      )
+    do {
+      lines = try recognize(in: imageForRecognition)
+    } catch {
+      logger.error("Primary OCR request failed: \(error.localizedDescription, privacy: .public)")
+      guard let retryImage = normalizedCGImage(from: image, maxDimension: 4096) else { throw error }
+      lines = try recognize(in: retryImage)
+      logger.info("OCR retry succeeded after image normalization")
     }
     var outputLines = rotatedImage == nil
       ? lines
@@ -4377,6 +4379,43 @@ final class OCRService {
       outputLines = filterWatermarkLines(outputLines, in: cgImage)
     }
     return outputLines.map { RecognizedTextLine(text: $0.text, box: $0.box) }
+  }
+
+  private func recognize(in image: CGImage) throws -> [OCRLine] {
+    if AppPreferences.languageMode == .globalAuto {
+      return try recognizeGlobalAuto(in: image).lines
+    }
+    return try recognizeLines(
+      in: image,
+      languages: AppPreferences.languageMode.recognitionLanguages,
+      preservesSymbols: AppPreferences.languageMode.preservesSymbols
+    )
+  }
+
+  private func normalizedCGImage(from image: NSImage, maxDimension: Int? = nil) -> CGImage? {
+    guard let source = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+    let sourceWidth = source.width
+    let sourceHeight = source.height
+    guard sourceWidth > 0, sourceHeight > 0 else { return nil }
+    let limit = maxDimension ?? max(sourceWidth, sourceHeight)
+    let scale = min(1, CGFloat(limit) / CGFloat(max(sourceWidth, sourceHeight)))
+    let width = max(1, Int((CGFloat(sourceWidth) * scale).rounded()))
+    let height = max(1, Int((CGFloat(sourceHeight) * scale).rounded()))
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    guard let context = CGContext(
+      data: nil,
+      width: width,
+      height: height,
+      bitsPerComponent: 8,
+      bytesPerRow: width * 4,
+      space: colorSpace,
+      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return nil }
+    context.interpolationQuality = .high
+    context.setFillColor(gray: 1, alpha: 1)
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+    return context.makeImage()
   }
 
   private func filterWatermarkLines(_ lines: [OCRLine], in image: CGImage) -> [OCRLine] {

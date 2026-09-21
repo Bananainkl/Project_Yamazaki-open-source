@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1 - 2026-09-21
+
+- Normalize captured screenshots to an opaque RGB bitmap before Vision OCR.
+- Retry once with a bounded image when macOS 27 rejects the original image representation.
+- Preserve strict signatures when installing into `/Applications` by avoiding Finder/FileProvider metadata.
+
 ## 0.7.0 - 2026-09-17
 
 - Restored OCR compatibility on macOS 27 by rebuilding against Xcode 27 and the macOS 27 SDK.
