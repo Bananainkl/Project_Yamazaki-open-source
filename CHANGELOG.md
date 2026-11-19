@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.5 - 2026-11-20
+
+- Add an isolated `--ocr-worker` subprocess fallback so OCR and screenshot translation keep working when the long-lived menu-bar process hits a stale macOS 27 `TextRecognition` / `E5RT` handle.
+- Automatically schedule a non-disruptive idle background relaunch after subprocess recovery to restore a clean in-process OCR runtime without interrupting active windows or stealing focus.
+- Harden capture process lifecycle, task cancellation tokens, and stale temporary file cleanup.
+- Expand unit and subprocess resilience test coverage in `VisionOCRSupportTests`.
+
+## 0.7.4 - 2026-11-03
+
+- Prefer explicitly assigned Vision CPU compute on macOS 26+ before the system-default TextRecognition path.
+- Add repeated regression coverage using the production mixed-language profile and narrow capture dimensions.
+
+## 0.7.3 - 2026-11-02
+
+- Explicitly bind Vision OCR fallback compute stages to CPU using the supported compute-device API.
+- Log CPU fallback failures and add a generated-image OCR regression test.
+
+## 0.7.2 - 2026-10-27
+
+- Add a CPU-only Vision fallback for macOS 27 E5/ANE compute-operation failures.
+- Exclude a pre-existing duplicate source copy that prevented SwiftPM builds.
+
 ## 0.7.1 - 2026-09-21
 
 - Normalize captured screenshots to an opaque RGB bitmap before Vision OCR.

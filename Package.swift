@@ -12,7 +12,18 @@ let package = Package(
   targets: [
     .executableTarget(
       name: "FreeScanOCR",
-      path: "Sources/FreeScanOCR"
+      dependencies: ["VisionOCRSupport"],
+      path: "Sources/FreeScanOCR",
+      exclude: ["main (1).swift"]
+    ),
+    .target(
+      name: "VisionOCRSupport",
+      path: "Sources/VisionOCRSupport"
+    ),
+    .testTarget(
+      name: "VisionOCRSupportTests",
+      dependencies: ["VisionOCRSupport"],
+      path: "Tests/VisionOCRSupportTests"
     )
   ]
 )

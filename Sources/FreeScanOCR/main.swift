@@ -2,11 +2,13 @@ import AppKit
 import Carbon.HIToolbox
 import Combine
 import CoreGraphics
+import ImageIO
 import OSLog
 import SwiftUI
 import Translation
 import _Translation_SwiftUI
 import UniformTypeIdentifiers
+import VisionOCRSupport
 import Vision
 
 enum ProductInfo {
@@ -1043,6 +1045,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var isShowingPermissionAlert = false
   private let statusMenuItem = NSMenuItem(title: LocalizedText.tr(.waitingForShortcut), action: nil, keyEquivalent: "")
 
+  // 任务和进程管理 - 修复 macOS 27 稳定性问题与子进程 OCR 自愈
+  private let lifecycleLogger = Logger(subsystem: "com.itou.yamazaki", category: "Lifecycle")
+  private var currentOCRTask: Task<Void, Never>?
+  private var activeOCRTaskID: UUID?
+  private var currentTranslationTask: Task<Void, Never>?
+  private var activeTranslationTaskID: UUID?
+  private var currentCaptureProcess: Process?
+  private var lastCaptureTime: Date = .distantPast
+  private let captureDebounceInterval: TimeInterval = 0.3
+  private var isSelfHealScheduled = false
+
   func applicationDidFinishLaunching(_ notification: Notification) {
     guard isPrimaryApplicationInstance else {
       NSApp.terminate(nil)
@@ -1050,6 +1063,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     NSApp.setActivationPolicy(.accessory)
+    ocrService.onSelfHealNeeded = { [weak self] error in
+      self?.scheduleSelfHealIfNeeded(triggerError: error)
+    }
     settingsModel.shortcutText = hotKey.displayText
     settingsModel.translationShortcutText = translateHotKey.displayText
     settingsModel.status = LocalizedText.tr(.shortcutEnabled, hotKey.displayText)
@@ -1058,8 +1074,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if AppPreferences.startAtLogin || AppPreferences.autoRestart {
       LaunchAgentService.refreshLaunchAgent()
     }
+
+    // 清理旧的临时文件
+    cleanupOldTempFiles()
+
     configureStatusItem()
     registerHotKey()
+  }
+
+  private func cleanupOldTempFiles() {
+    DispatchQueue.global(qos: .utility).async {
+      let tempDir = FileManager.default.temporaryDirectory
+      do {
+        let contents = try FileManager.default.contentsOfDirectory(
+          at: tempDir,
+          includingPropertiesForKeys: [.creationDateKey],
+          options: []
+        )
+        let oldFiles = contents.filter { url in
+          let name = url.lastPathComponent
+          let isYamazakiTemp = name.hasPrefix("yamazaki-capture-") || name.hasPrefix("yamazaki-ocr-worker-")
+          let isExpectedExt = url.pathExtension == "png" || url.pathExtension == "json"
+          guard isYamazakiTemp && isExpectedExt else { return false }
+          return (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate)
+            .map { Date().timeIntervalSince($0) > 3600 } ?? false
+        }
+        for file in oldFiles {
+          try? FileManager.default.removeItem(at: file)
+        }
+      } catch {
+        // 清理失败不影响应用启动
+      }
+    }
   }
 
   private var isPrimaryApplicationInstance: Bool {
@@ -1077,6 +1123,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationWillTerminate(_ notification: Notification) {
+    // 1. 取消所有正在进行的异步任务
+    activeOCRTaskID = nil
+    currentOCRTask?.cancel()
+    currentOCRTask = nil
+
+    activeTranslationTaskID = nil
+    currentTranslationTask?.cancel()
+    currentTranslationTask = nil
+
+    // 2. 终止所有正在运行的子进程
+    ocrService.cancelActiveWorker()
+    if let process = currentCaptureProcess, process.isRunning {
+      process.terminate()
+    }
+    currentCaptureProcess = nil
+
+    // 3. 关闭所有编辑器窗口
+    editorWindows.forEach { $0.close() }
+    editorWindows.removeAll()
+    editorControllers.removeAll()
+
+    // 4. 关闭翻译窗口
+    translationWindow?.close()
+    translationWindow = nil
+
+    // 5. 注销热键
     if let hotKeyRef {
       UnregisterEventHotKey(hotKeyRef)
     }
@@ -1394,12 +1466,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func captureSelection() {
+    // 防抖：防止快速重复触发
+    let now = Date()
+    guard now.timeIntervalSince(lastCaptureTime) >= captureDebounceInterval else {
+      return
+    }
+    lastCaptureTime = now
+
     captureScreenSelection { [weak self] image in
       self?.recognizeImageToClipboard(image)
     }
   }
 
   private func captureTranslationSelection() {
+    // 防抖：防止快速重复触发
+    let now = Date()
+    guard now.timeIntervalSince(lastCaptureTime) >= captureDebounceInterval else {
+      return
+    }
+    lastCaptureTime = now
+
     captureScreenSelection { [weak self] image in
       self?.presentTranslationPreview(for: image)
     }
@@ -1408,22 +1494,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func captureScreenSelection(completion: @escaping (NSImage) -> Void) {
     guard !isRunningCapture else { return }
     guard ensureScreenCapturePermission() else { return }
+
+    // 终止之前的截图进程
+    if let previousProcess = currentCaptureProcess, previousProcess.isRunning {
+      previousProcess.terminate()
+      currentCaptureProcess = nil
+    }
+
+    let captureURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("yamazaki-capture-\(UUID().uuidString)")
+      .appendingPathExtension("png")
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    process.arguments = ["-i", "-x", captureURL.path]
+
+    currentCaptureProcess = process
     isRunningCapture = true
     updateStatus(LocalizedText.tr(.captureSelection))
 
-    DispatchQueue.global(qos: .userInitiated).async {
-      let captureURL = FileManager.default.temporaryDirectory
-        .appendingPathComponent("yamazaki-capture-\(UUID().uuidString)")
-        .appendingPathExtension("png")
-      let process = Process()
-      process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-      process.arguments = ["-i", "-x", captureURL.path]
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      defer {
+        try? FileManager.default.removeItem(at: captureURL)
+      }
 
       do {
         try process.run()
         process.waitUntilExit()
       } catch {
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+          guard let self else { return }
+          if self.currentCaptureProcess === process {
+            self.currentCaptureProcess = nil
+          }
           self.isRunningCapture = false
           self.updateStatus(LocalizedText.tr(.recognitionFailed, error.localizedDescription))
         }
@@ -1437,10 +1540,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       } else {
         capturedImage = nil
       }
-      try? FileManager.default.removeItem(at: captureURL)
 
-      DispatchQueue.main.async {
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        if self.currentCaptureProcess === process {
+          self.currentCaptureProcess = nil
+        }
         self.isRunningCapture = false
+
         if process.terminationStatus == 0 {
           if let image = capturedImage {
             completion(image)
@@ -1501,15 +1608,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func recognizeImageToClipboard(_ image: NSImage) {
+    // 取消之前的 OCR 任务和子进程
+    currentOCRTask?.cancel()
+    ocrService.cancelActiveWorker()
+
+    let taskID = UUID()
+    activeOCRTaskID = taskID
     updateStatus(LocalizedText.tr(.recognizingText))
     statusItem?.button?.image = statusBarImage(named: "text.viewfinder")
 
-    Task.detached(priority: .userInitiated) {
+    currentOCRTask = Task.detached(priority: .userInitiated) { [weak self] in
+      guard let self = self else { return }
+      guard !Task.isCancelled else { return }
+
       do {
         let text = try self.ocrService.recognizeText(in: image)
-        await MainActor.run {
+        guard !Task.isCancelled else { return }
+
+        await MainActor.run { [weak self] in
+          guard let self = self, self.activeOCRTaskID == taskID else { return }
+
           if text.isEmpty {
             self.updateStatus(LocalizedText.tr(.noTextFound))
+            self.statusItem?.button?.image = self.statusBarImage(named: "viewfinder")
           } else {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
@@ -1517,14 +1638,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.playSuccessSound()
             self.flashSuccessIcon()
           }
-          if text.isEmpty {
-            self.statusItem?.button?.image = self.statusBarImage(named: "viewfinder")
-          }
+
+          self.activeOCRTaskID = nil
+          self.currentOCRTask = nil
         }
       } catch {
-        await MainActor.run {
+        guard !Task.isCancelled else { return }
+
+        await MainActor.run { [weak self] in
+          guard let self = self, self.activeOCRTaskID == taskID else { return }
           self.updateStatus(LocalizedText.tr(.recognitionFailed, error.localizedDescription))
           self.statusItem?.button?.image = self.statusBarImage(named: "exclamationmark.triangle")
+          self.activeOCRTaskID = nil
+          self.currentOCRTask = nil
         }
       }
     }
@@ -1532,22 +1658,122 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private func presentTranslationPreview(for image: NSImage) {
     if #available(macOS 15.0, *) {
+      currentTranslationTask?.cancel()
+      ocrService.cancelActiveWorker()
+
+      let taskID = UUID()
+      activeTranslationTaskID = taskID
       updateStatus(LocalizedText.tr(.recognizingText))
-      Task.detached(priority: .userInitiated) {
+
+      currentTranslationTask = Task.detached(priority: .userInitiated) { [weak self] in
+        guard let self = self else { return }
+        guard !Task.isCancelled else { return }
+
         do {
           let lines = try self.ocrService.recognizePositionedText(in: image)
-          await MainActor.run {
+          guard !Task.isCancelled else { return }
+
+          await MainActor.run { [weak self] in
+            guard let self = self, self.activeTranslationTaskID == taskID else { return }
             self.showTranslationWindow(image: image, lines: lines)
             self.updateStatus(LocalizedText.tr(.translateSelection))
+            self.activeTranslationTaskID = nil
+            self.currentTranslationTask = nil
           }
         } catch {
-          await MainActor.run {
+          guard !Task.isCancelled else { return }
+
+          await MainActor.run { [weak self] in
+            guard let self = self, self.activeTranslationTaskID == taskID else { return }
             self.updateStatus(LocalizedText.tr(.recognitionFailed, error.localizedDescription))
+            self.activeTranslationTaskID = nil
+            self.currentTranslationTask = nil
           }
         }
       }
     } else {
       updateStatus(LocalizedText.tr(.translationRequiresMacOS15))
+    }
+  }
+
+  private func scheduleSelfHealIfNeeded(triggerError: Error) {
+    DispatchQueue.main.async { [weak self] in
+      guard let self, !self.isSelfHealScheduled else { return }
+      self.isSelfHealScheduled = true
+      self.lifecycleLogger.warning(
+        "In-process OCR degraded (\(triggerError.localizedDescription, privacy: .public)); subprocess worker succeeded. Scheduling idle self-heal relaunch."
+      )
+      self.scheduleIdleSelfHealCheck(after: 3.0)
+    }
+  }
+
+  private func scheduleIdleSelfHealCheck(after delay: TimeInterval) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+      self?.attemptIdleSelfHealRelaunch()
+    }
+  }
+
+  private func attemptIdleSelfHealRelaunch() {
+    let cooldownKey = "LastSelfHealRelaunchTimestamp"
+    let now = Date().timeIntervalSince1970
+    let lastRelaunch = UserDefaults.standard.double(forKey: cooldownKey)
+    if lastRelaunch > 0 && (now - lastRelaunch) < 60 {
+      scheduleIdleSelfHealCheck(after: max(5, 60 - (now - lastRelaunch)))
+      return
+    }
+
+    let hasVisibleWindow =
+      (window?.isVisible == true) ||
+      (translationWindow?.isVisible == true) ||
+      editorWindows.contains(where: \.isVisible)
+
+    let isBusy =
+      isRunningCapture ||
+      currentOCRTask != nil ||
+      currentTranslationTask != nil ||
+      isShowingPermissionAlert ||
+      hasVisibleWindow
+
+    guard !isBusy else {
+      scheduleIdleSelfHealCheck(after: 5.0)
+      return
+    }
+
+    let bundlePath = Bundle.main.bundlePath
+    guard bundlePath.hasSuffix(".app"),
+          FileManager.default.fileExists(atPath: bundlePath) else {
+      return
+    }
+
+    UserDefaults.standard.set(now, forKey: cooldownKey)
+    UserDefaults.standard.synchronize()
+
+    let currentPID = String(ProcessInfo.processInfo.processIdentifier)
+    let relaunchScript = """
+    old_pid="$1"
+    app_path="$2"
+    i=0
+    while /bin/kill -0 "$old_pid" 2>/dev/null && [ "$i" -lt 50 ]; do
+      /bin/sleep 0.1
+      i=$((i + 1))
+    done
+    /usr/bin/open -g "$app_path"
+    """
+
+    let relauncher = Process()
+    relauncher.executableURL = URL(fileURLWithPath: "/bin/sh")
+    relauncher.arguments = ["-c", relaunchScript, "yamazaki-self-heal", currentPID, bundlePath]
+    relauncher.standardInput = FileHandle.nullDevice
+    relauncher.standardOutput = FileHandle.nullDevice
+    relauncher.standardError = FileHandle.nullDevice
+
+    do {
+      try relauncher.run()
+      lifecycleLogger.info("Executing background self-heal relaunch for \(bundlePath, privacy: .public)")
+      NSApp.terminate(nil)
+    } catch {
+      lifecycleLogger.error("Failed to launch self-heal helper: \(error.localizedDescription, privacy: .public)")
+      isSelfHealScheduled = false
     }
   }
 
@@ -1644,8 +1870,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func updateStatus(_ status: String) {
-    statusMenuItem.title = status
-    settingsModel.status = status
+    // 确保 UI 更新在主线程
+    if Thread.isMainThread {
+      statusMenuItem.title = status
+      settingsModel.status = status
+    } else {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { return }
+        self.statusMenuItem.title = status
+        self.settingsModel.status = status
+      }
+    }
   }
 
   private func playSuccessSound() {
@@ -2550,11 +2785,17 @@ struct TranslationPreviewView: View {
     guard !lines.isEmpty else { return }
     do {
       for line in lines {
+        // 检查任务是否被取消
+        try Task.checkCancellation()
+
         let response = try await session.translate(line.text)
         await MainActor.run {
           translatedLines[line.id] = response.targetText
         }
       }
+    } catch is CancellationError {
+      // 正常取消，不记录错误
+      return
     } catch {
       await MainActor.run {
         errorMessage = error.localizedDescription
@@ -3273,11 +3514,12 @@ final class CaptureCanvasView: NSView {
   func renderedImage() -> NSImage {
     let output = NSImage(size: bounds.size)
     output.lockFocus()
+    defer { output.unlockFocus() }
+
     image.draw(in: bounds)
     for annotation in annotations {
       draw(annotation)
     }
-    output.unlockFocus()
     return output
   }
 
@@ -4177,14 +4419,16 @@ enum LaunchAgentService {
   }
 
   private static func runLaunchctl(arguments: [String]) {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-    process.arguments = arguments
-    do {
-      try process.run()
-      process.waitUntilExit()
-    } catch {
-      NSLog("launchctl failed: \(error.localizedDescription)")
+    DispatchQueue.global(qos: .utility).async {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+      process.arguments = arguments
+      do {
+        try process.run()
+        process.waitUntilExit()
+      } catch {
+        NSLog("launchctl failed: \(error.localizedDescription)")
+      }
     }
   }
 
@@ -4316,6 +4560,10 @@ struct RecognizedTextLine: Identifiable {
 
 final class OCRService {
   private let logger = Logger(subsystem: "com.itou.yamazaki", category: "OCR")
+  private let resilience = OCRResilienceCoordinator()
+  private let workerProcessLock = NSLock()
+  private var activeWorkerProcess: Process?
+  var onSelfHealNeeded: ((Error) -> Void)?
 
   private struct OCRLine {
     let text: String
@@ -4337,6 +4585,23 @@ final class OCRService {
     }
   }
 
+  func cancelActiveWorker() {
+    workerProcessLock.lock()
+    let process = activeWorkerProcess
+    activeWorkerProcess = nil
+    workerProcessLock.unlock()
+
+    if let process, process.isRunning {
+      process.terminate()
+    }
+  }
+
+  private func setActiveWorkerProcess(_ process: Process?) {
+    workerProcessLock.lock()
+    activeWorkerProcess = process
+    workerProcessLock.unlock()
+  }
+
   func recognizeText(in image: NSImage) throws -> String {
     let lines = try recognizePositionedText(in: image).map { OCRLine(text: $0.text, box: $0.box, confidence: 1) }
 
@@ -4354,18 +4619,65 @@ final class OCRService {
     guard let cgImage = normalizedCGImage(from: image) else {
       throw OCRError.invalidImage
     }
-    let rotatedImage = AppPreferences.textDirection == .vertical ? rotatedClockwise(cgImage) : nil
+
+    let languageMode = AppPreferences.languageMode
+    let textDirection = AppPreferences.textDirection
+    let ignoreWatermarkText = AppPreferences.ignoreWatermarkText
+
+    return try resilience.execute(
+      inProcess: {
+        try recognizePositionedTextInCurrentProcess(
+          cgImage: cgImage,
+          languageMode: languageMode,
+          textDirection: textDirection,
+          ignoreWatermarkText: ignoreWatermarkText
+        )
+      },
+      subprocessFallback: {
+        logger.info("Running isolated OCR worker subprocess after in-process failure or degradation")
+        return try recognizePositionedTextInSubprocess(
+          cgImage: cgImage,
+          languageMode: languageMode,
+          textDirection: textDirection,
+          ignoreWatermarkText: ignoreWatermarkText
+        )
+      },
+      onSelfHealNeeded: { [weak self] error in
+        self?.onSelfHealNeeded?(error)
+      }
+    )
+  }
+
+  fileprivate func recognizePositionedTextInCurrentProcess(
+    cgImage: CGImage,
+    languageMode: AppPreferences.LanguageMode,
+    textDirection: AppPreferences.TextDirection,
+    ignoreWatermarkText: Bool
+  ) throws -> [RecognizedTextLine] {
+    let rotatedImage = textDirection == .vertical ? rotatedClockwise(cgImage) : nil
     let imageForRecognition = rotatedImage ?? cgImage
 
     let lines: [OCRLine]
+    let useCPUFirst: Bool
+    if #available(macOS 26.0, *) {
+      useCPUFirst = true
+    } else {
+      useCPUFirst = false
+    }
+
     do {
-      lines = try recognize(in: imageForRecognition)
+      lines = try recognize(in: imageForRecognition, languageMode: languageMode, usesCPUOnly: useCPUFirst)
     } catch {
       logger.error("Primary OCR request failed: \(error.localizedDescription, privacy: .public)")
-      guard let retryImage = normalizedCGImage(from: image, maxDimension: 4096) else { throw error }
-      lines = try recognize(in: retryImage)
-      logger.info("OCR retry succeeded after image normalization")
+      do {
+        lines = try recognize(in: imageForRecognition, languageMode: languageMode, usesCPUOnly: !useCPUFirst)
+        logger.info("OCR alternate compute path succeeded")
+      } catch {
+        logger.error("OCR alternate compute path failed: \(error.localizedDescription, privacy: .public)")
+        throw error
+      }
     }
+
     var outputLines = rotatedImage == nil
       ? lines
       : lines.map { line in
@@ -4375,28 +4687,134 @@ final class OCRService {
           confidence: line.confidence
         )
       }
-    if AppPreferences.ignoreWatermarkText {
+    if ignoreWatermarkText {
       outputLines = filterWatermarkLines(outputLines, in: cgImage)
     }
     return outputLines.map { RecognizedTextLine(text: $0.text, box: $0.box) }
   }
 
-  private func recognize(in image: CGImage) throws -> [OCRLine] {
-    if AppPreferences.languageMode == .globalAuto {
-      return try recognizeGlobalAuto(in: image).lines
+  private func recognizePositionedTextInSubprocess(
+    cgImage: CGImage,
+    languageMode: AppPreferences.LanguageMode,
+    textDirection: AppPreferences.TextDirection,
+    ignoreWatermarkText: Bool
+  ) throws -> [RecognizedTextLine] {
+    guard let executableURL = Self.resolveCurrentExecutableURL() else {
+      throw OCRWorkerError.executableUnavailable
+    }
+
+    let bitmap = NSBitmapImageRep(cgImage: cgImage)
+    guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
+      throw OCRWorkerError.imageEncodingFailed
+    }
+
+    let token = UUID().uuidString
+    let tempDir = FileManager.default.temporaryDirectory
+    let inputURL = tempDir.appendingPathComponent("yamazaki-ocr-worker-\(token).png")
+    let outputURL = tempDir.appendingPathComponent("yamazaki-ocr-worker-\(token).json")
+
+    try pngData.write(to: inputURL, options: .atomic)
+    defer {
+      try? FileManager.default.removeItem(at: inputURL)
+    }
+
+    let workerRequest = OCRWorkerRequest(
+      imagePath: inputURL.path,
+      outputPath: outputURL.path,
+      languageMode: languageMode.rawValue,
+      textDirection: textDirection.rawValue,
+      ignoreWatermark: ignoreWatermarkText
+    )
+
+    let payloads = try OCRSubprocessRunner.run(
+      executableURL: executableURL,
+      request: workerRequest,
+      timeout: 60,
+      registerProcess: { [weak self] process in
+        self?.setActiveWorkerProcess(process)
+      }
+    )
+
+    return payloads.map { RecognizedTextLine(text: $0.text, box: $0.boundingBox) }
+  }
+
+  private static func resolveCurrentExecutableURL() -> URL? {
+    if let bundleExec = Bundle.main.executableURL,
+       FileManager.default.isExecutableFile(atPath: bundleExec.path) {
+      return bundleExec
+    }
+    if let arg0 = CommandLine.arguments.first {
+      let url = URL(fileURLWithPath: arg0)
+      if FileManager.default.isExecutableFile(atPath: url.path) {
+        return url
+      }
+    }
+    return nil
+  }
+
+  static func runWorkerCLI(request: OCRWorkerRequest) -> Int32 {
+    let service = OCRService()
+    let imageURL = URL(fileURLWithPath: request.imagePath)
+
+    guard let imageSource = CGImageSourceCreateWithURL(imageURL as CFURL, nil),
+          let rawCGImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil),
+          let cgImage = service.normalizedCGImage(fromCGImage: rawCGImage) else {
+      let message = "Failed to load OCR worker input image.\n"
+      if let data = message.data(using: .utf8) {
+        FileHandle.standardError.write(data)
+      }
+      return 1
+    }
+
+    let languageMode = AppPreferences.LanguageMode(rawValue: request.languageMode) ?? .globalAuto
+    let textDirection = AppPreferences.TextDirection(rawValue: request.textDirection) ?? .horizontal
+
+    do {
+      let lines = try service.recognizePositionedTextInCurrentProcess(
+        cgImage: cgImage,
+        languageMode: languageMode,
+        textDirection: textDirection,
+        ignoreWatermarkText: request.ignoreWatermark
+      )
+      let payloads = lines.map { OCRWorkerLinePayload(text: $0.text, box: $0.box) }
+      let encoded = try JSONEncoder().encode(payloads)
+      try encoded.write(to: URL(fileURLWithPath: request.outputPath), options: .atomic)
+      return 0
+    } catch {
+      let message = "\(error.localizedDescription)\n"
+      if let data = message.data(using: .utf8) {
+        FileHandle.standardError.write(data)
+      }
+      return 1
+    }
+  }
+
+  private func recognize(
+    in image: CGImage,
+    languageMode: AppPreferences.LanguageMode,
+    usesCPUOnly: Bool
+  ) throws -> [OCRLine] {
+    if languageMode == .globalAuto {
+      return try recognizeGlobalAuto(in: image, usesCPUOnly: usesCPUOnly).lines
     }
     return try recognizeLines(
       in: image,
-      languages: AppPreferences.languageMode.recognitionLanguages,
-      preservesSymbols: AppPreferences.languageMode.preservesSymbols
+      languages: languageMode.recognitionLanguages,
+      preservesSymbols: languageMode.preservesSymbols,
+      usesCPUOnly: usesCPUOnly
     )
   }
 
   private func normalizedCGImage(from image: NSImage, maxDimension: Int? = nil) -> CGImage? {
     guard let source = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+    return normalizedCGImage(fromCGImage: source, maxDimension: maxDimension)
+  }
+
+  private func normalizedCGImage(fromCGImage source: CGImage, maxDimension: Int? = nil) -> CGImage? {
     let sourceWidth = source.width
     let sourceHeight = source.height
     guard sourceWidth > 0, sourceHeight > 0 else { return nil }
+
     let limit = maxDimension ?? max(sourceWidth, sourceHeight)
     let scale = min(1, CGFloat(limit) / CGFloat(max(sourceWidth, sourceHeight)))
     let width = max(1, Int((CGFloat(sourceWidth) * scale).rounded()))
@@ -4411,6 +4829,7 @@ final class OCRService {
       space: colorSpace,
       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
     ) else { return nil }
+
     context.interpolationQuality = .high
     context.setFillColor(gray: 1, alpha: 1)
     context.fill(CGRect(x: 0, y: 0, width: width, height: height))
@@ -4537,7 +4956,7 @@ final class OCRService {
       (0xAC00...0xD7AF).contains(scalar.value)
   }
 
-  private func recognizeGlobalAuto(in image: CGImage) throws -> OCRResult {
+  private func recognizeGlobalAuto(in image: CGImage, usesCPUOnly: Bool) throws -> OCRResult {
     let profiles = [
       ["zh-Hans", "zh-Hant", "en-US"],
       AppPreferences.LanguageMode.chineseTraditionalEnglishJapaneseSymbols.recognitionLanguages,
@@ -4548,7 +4967,7 @@ final class OCRService {
     ]
 
     let results = try profiles.map { profile in
-      OCRResult(lines: try recognizeLines(in: image, languages: profile), languageProfile: profile)
+      OCRResult(lines: try recognizeLines(in: image, languages: profile, usesCPUOnly: usesCPUOnly), languageProfile: profile)
     }
 
     return results.max { lhs, rhs in
@@ -4575,7 +4994,7 @@ final class OCRService {
       + Double(nonLatinCount) * 0.65
   }
 
-  private func recognizeLines(in image: CGImage, languages: [String], preservesSymbols: Bool = false) throws -> [OCRLine] {
+  private func recognizeLines(in image: CGImage, languages: [String], preservesSymbols: Bool = false, usesCPUOnly: Bool = false) throws -> [OCRLine] {
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = !preservesSymbols
@@ -4599,6 +5018,10 @@ final class OCRService {
       "단축키",
       "인식"
     ]
+
+    if usesCPUOnly {
+      try VisionCPUConfiguration.useCPU(for: request)
+    }
 
     let handler = VNImageRequestHandler(cgImage: image, options: [:])
     try handler.perform([request])
@@ -4749,6 +5172,10 @@ private func fourCharacterCode(_ string: String) -> OSType {
     result = (result << 8) + OSType(scalar.value)
   }
   return result
+}
+
+if let workerRequest = OCRWorkerRequest.parse(arguments: CommandLine.arguments) {
+  exit(OCRService.runWorkerCLI(request: workerRequest))
 }
 
 let app = NSApplication.shared
