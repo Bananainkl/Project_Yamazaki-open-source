@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
   name: "Yamazaki",
   platforms: [
-    .macOS(.v13)
+    .macOS("26.0")
   ],
   products: [
     .executable(name: "Yamazaki", targets: ["FreeScanOCR"])

@@ -5,7 +5,7 @@ MODE="${1:-run}"
 APP_NAME="Yamazaki"
 DISPLAY_NAME="Yamazaki"
 BUNDLE_ID="com.itou.yamazaki"
-MIN_SYSTEM_VERSION="13.0"
+MIN_SYSTEM_VERSION="26.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_VERSION="$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")"

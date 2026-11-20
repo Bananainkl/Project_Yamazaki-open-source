@@ -14,7 +14,7 @@
 <p align="center">
   <img alt="MIT" src="https://img.shields.io/badge/license-MIT-2563eb">
   <img alt="Swift" src="https://img.shields.io/badge/Swift-native-f05138?logo=swift&logoColor=white">
-  <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-111827?logo=apple">
+  <img alt="macOS 26+" src="https://img.shields.io/badge/macOS-26%2B-111827?logo=apple">
   <img alt="On-device OCR" src="https://img.shields.io/badge/OCR-on_device-22c55e">
   <img alt="GitHub stars" src="https://img.shields.io/github/stars/Bananainkl/Project_Yamazaki-open-source?style=flat">
 </p>
@@ -43,7 +43,7 @@ Yamazaki is a free, local, native macOS menu-bar utility for region OCR and scre
   <img src="docs/images/product-screenshot.jpg" alt="Yamazaki native macOS settings" width="72%">
 </p>
 
-Current version: `0.6.8`.
+Current version: `0.8.0`.
 
 ## Features
 
@@ -60,9 +60,8 @@ Yamazaki does not stay in the Dock. Open its settings and commands from the menu
 
 ## Requirements
 
-- macOS 13 or later for OCR
-- macOS 15 or later for screenshot translation
-- Xcode / Swift 5.9 or later for development
+- macOS 26 or later (native Liquid Glass UI, Apple Vision OCR, and on-device Translation)
+- Xcode 26+ / Swift 6.0 or later for development
 - Screen Recording permission for region capture
 
 ## Quick Start

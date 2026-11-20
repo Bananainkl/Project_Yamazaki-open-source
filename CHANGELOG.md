@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 - 2026-11-20
+
+- Redesign the entire application UI, UX, interactions, and animations targeting the native macOS 26+ / macOS 27 SDK Liquid Glass design system (`Glass`, `.glassEffect`, `GlassEffectContainer`, `.buttonStyle(.glass)` / `.buttonStyle(.glassProminent)`, `ToolbarSpacer`, and `@Observable`).
+- Upgrade the menu-bar left-click experience to a Liquid Glass Control Center Popover with primary OCR/translation/clipboard cards, inline language profile and scan direction switchers, and an in-memory recent OCR history list with one-click re-copy (while preserving right-click native `NSMenu`).
+- Add a non-activating Floating HUD Capsule (`NSPanel`) with matched-geometry Liquid Glass transitions and SF Symbol bounce effects for instant post-capture feedback.
+- Rebuild the Settings window with `NavigationSplitView`, `.formStyle(.grouped)`, unified toolbar status badge, physical keycap shortcut recorders, interactive scan-direction cards, and live typography/layout preview while restoring full keyboard focus and VoiceOver navigation.
+- Introduce the dual-mode Translation Studio (`Split Compare` with synchronized bounding-box highlights + streaming translation cards, and `In-Place Overlay` with zoomable material pills) plus live target-language re-translation.
+- Modularize `FreeScanOCR` into `App`, `DesignSystem`, `Models`, `Services`, and `Views` while preserving the `v0.7.5` `--ocr-worker` subprocess isolation and idle background self-healing architecture.
+
 ## 0.7.5 - 2026-11-20
 
 - Add an isolated `--ocr-worker` subprocess fallback so OCR and screenshot translation keep working when the long-lived menu-bar process hits a stale macOS 27 `TextRecognition` / `E5RT` handle.
