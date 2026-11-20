@@ -136,6 +136,7 @@ final class AppStateModel {
 struct SettingsActions {
   let startShortcutRecording: () -> Void
   let startTranslationShortcutRecording: () -> Void
+  let cancelShortcutRecording: () -> Void
   let setShortcut: (HotKeyPreference) -> Void
   let setTranslationShortcut: (HotKeyPreference) -> Void
   let resetDefaultShortcut: () -> Void

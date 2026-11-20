@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1 - 2026-11-20
+
+- Replace `NSPopover` in the menu-bar Control Center with a screen-clamped floating `NSPanel` (`MenuBarControlPanelController`) so the panel top edge never overflows above the macOS menu bar or notch on macOS 27, and ensure first-click button responsiveness (`acceptsFirstMouse`).
+- Fix Screen Recording permission requesting across rebuilt binaries by invoking `CGRequestScreenCaptureAccess()` once per process when preflight fails and automatically preferring a local `Apple Development` code-signing identity during local builds when available.
+- Temporarily suspend global Carbon hotkeys while recording shortcuts in Settings so re-binding existing shortcuts does not trigger capture, and prevent ARC over-release when closing the Translation Studio window.
+
 ## 0.8.0 - 2026-11-20
 
 - Redesign the entire application UI, UX, interactions, and animations targeting the native macOS 26+ / macOS 27 SDK Liquid Glass design system (`Glass`, `.glassEffect`, `GlassEffectContainer`, `.buttonStyle(.glass)` / `.buttonStyle(.glassProminent)`, `ToolbarSpacer`, and `@Observable`).

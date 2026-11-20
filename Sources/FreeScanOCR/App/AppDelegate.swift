@@ -6,7 +6,7 @@ import OSLog
 import SwiftUI
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
   private let lifecycleLogger = Logger(subsystem: "com.itou.yamazaki", category: "Lifecycle")
 
   private var hotKeyRef: EventHotKeyRef?
@@ -14,10 +14,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
   private var eventHandlerRef: EventHandlerRef?
 
   private var statusItem: NSStatusItem?
-  private let popover = NSPopover()
-  private var outsideClickMonitor: Any?
+  private lazy var menuBarPanelController = MenuBarControlPanelController(
+    model: stateModel,
+    actionsProvider: { [weak self] in
+      guard let self else { return Self.noopActions }
+      return self.makeActions()
+    }
+  )
 
   private var settingsWindow: NSWindow?
+  private var settingsCloseObserver: NSObjectProtocol?
   private var translationWindow: NSWindow?
   private lazy var hudController = FloatingHUDController(
     model: stateModel,
@@ -33,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
   private var isRunningCapture = false
   private var isShowingPermissionAlert = false
+  private var hasRequestedScreenCaptureInProcess = false
 
   private var currentOCRTask: Task<Void, Never>?
   private var activeOCRTaskID: UUID?
@@ -74,9 +81,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     cleanupOldTempFiles()
-    configurePopover()
     configureStatusItem()
     registerHotKey()
+
+    if CommandLine.arguments.contains("--open-panel-on-launch") {
+      Task { @MainActor [weak self] in
+        try? await Task.sleep(for: .milliseconds(350))
+        if let self, let button = self.statusItem?.button {
+          self.syncStateFromPreferences()
+          self.menuBarPanelController.show(relativeTo: button)
+        }
+      }
+    }
   }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -85,7 +101,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
   }
 
   func applicationWillTerminate(_ notification: Notification) {
-    removeOutsideClickMonitor()
+    menuBarPanelController.close()
+    if let settingsCloseObserver {
+      NotificationCenter.default.removeObserver(settingsCloseObserver)
+      self.settingsCloseObserver = nil
+    }
     hudController.hideImmediately()
 
     activeOCRTaskID = nil
@@ -148,13 +168,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
   }
 
+  private static let noopActions = SettingsActions(
+    startShortcutRecording: {},
+    startTranslationShortcutRecording: {},
+    cancelShortcutRecording: {},
+    setShortcut: { _ in },
+    setTranslationShortcut: { _ in },
+    resetDefaultShortcut: {},
+    resetDefaultTranslationShortcut: {},
+    invalidShortcut: {},
+    captureSelection: {},
+    translateSelection: {},
+    recognizeClipboard: {},
+    openSettings: {},
+    openPermissionSettings: {},
+    quitApp: {},
+    setMuteSound: { _ in },
+    setShowFloatingHUD: { _ in },
+    setIgnoreWatermarkText: { _ in },
+    setStartAtLogin: { _ in },
+    setAutoRestart: { _ in },
+    setLanguageMode: { _ in },
+    setTranslationLanguage: { _ in },
+    setUILanguage: { _ in },
+    setTextDirection: { _ in },
+    setResultLayout: { _ in },
+    setResultFontSize: { _ in },
+    copyTextToPasteboard: { _ in }
+  )
+
   func makeActions() -> SettingsActions {
     SettingsActions(
       startShortcutRecording: { [weak self] in
+        self?.suspendHotKeys()
         self?.updateStatus(LocalizedText.tr(.pressNewShortcut), kind: .active)
       },
       startTranslationShortcutRecording: { [weak self] in
+        self?.suspendHotKeys()
         self?.updateStatus(LocalizedText.tr(.pressNewShortcut), kind: .active)
+      },
+      cancelShortcutRecording: { [weak self] in
+        self?.registerHotKey()
       },
       setShortcut: { [weak self] shortcut in
         self?.setHotKey(shortcut)
@@ -172,12 +226,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         self?.updateStatus(LocalizedText.tr(.invalidShortcut), kind: .warning)
       },
       captureSelection: { [weak self] in
-        self?.captureSelection()
+        self?.dismissPanelThenPerform { $0.captureSelection() }
       },
       translateSelection: { [weak self] in
-        self?.captureTranslationSelection()
+        self?.dismissPanelThenPerform { $0.captureTranslationSelection() }
       },
       recognizeClipboard: { [weak self] in
+        self?.menuBarPanelController.close()
         self?.recognizeClipboardImage()
       },
       openSettings: { [weak self] in
@@ -256,20 +311,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     )
   }
 
-  private func configurePopover() {
-    popover.behavior = .transient
-    popover.animates = true
-    popover.delegate = self
-    let hostingController = NSHostingController(
-      rootView: MenuBarPanelView(
-        model: stateModel,
-        actions: makeActions(),
-        onDismissPanel: { [weak self] in
-          self?.closePopover()
-        }
-      )
-    )
-    popover.contentViewController = hostingController
+  private func dismissPanelThenPerform(_ block: @escaping (AppDelegate) -> Void) {
+    let wasPanelVisible = menuBarPanelController.isVisible
+    menuBarPanelController.close()
+    if wasPanelVisible {
+      Task { @MainActor [weak self] in
+        try? await Task.sleep(for: .milliseconds(80))
+        guard let self else { return }
+        block(self)
+      }
+    } else {
+      block(self)
+    }
   }
 
   private func configureStatusItem() {
@@ -290,48 +343,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let isRightClick = (currentEvent?.type == .rightMouseUp) || (currentEvent?.modifierFlags.contains(.control) == true)
 
     if isRightClick {
-      closePopover()
+      menuBarPanelController.close()
       let menu = buildQuickContextMenu()
       menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
       return
     }
 
-    if popover.isShown {
-      closePopover()
-    } else {
-      syncStateFromPreferences()
-      NSApp.activate(ignoringOtherApps: true)
-      popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
-      popover.contentViewController?.view.window?.makeKey()
-      installOutsideClickMonitor()
-    }
-  }
-
-  private func closePopover() {
-    if popover.isShown {
-      popover.performClose(nil)
-    }
-    removeOutsideClickMonitor()
-  }
-
-  func popoverDidClose(_ notification: Notification) {
-    removeOutsideClickMonitor()
-  }
-
-  private func installOutsideClickMonitor() {
-    removeOutsideClickMonitor()
-    outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-      Task { @MainActor in
-        self?.closePopover()
-      }
-    }
-  }
-
-  private func removeOutsideClickMonitor() {
-    if let outsideClickMonitor {
-      NSEvent.removeMonitor(outsideClickMonitor)
-      self.outsideClickMonitor = nil
-    }
+    syncStateFromPreferences()
+    menuBarPanelController.toggle(relativeTo: sender)
   }
 
   private func buildQuickContextMenu() -> NSMenu {
@@ -399,7 +418,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
   @objc private func quitFromMenu() { NSApp.terminate(nil) }
 
   func showMainWindow(initialSection: SettingsSection = .general) {
-    closePopover()
+    menuBarPanelController.close()
     syncStateFromPreferences()
 
     if let settingsWindow {
@@ -427,6 +446,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         initialSection: initialSection
       )
     )
+
+    settingsCloseObserver = NotificationCenter.default.addObserver(
+      forName: NSWindow.willCloseNotification,
+      object: window,
+      queue: .main
+    ) { [weak self] _ in
+      Task { @MainActor [weak self] in
+        self?.registerHotKey()
+      }
+    }
 
     self.settingsWindow = window
     window.makeKeyAndOrderFront(nil)
@@ -456,7 +485,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     updateStatus(LocalizedText.tr(.shortcutEnabled, hotKey.displayText), kind: .ready)
   }
 
-  private func registerHotKey() {
+  private func suspendHotKeys() {
     if let hotKeyRef {
       UnregisterEventHotKey(hotKeyRef)
       self.hotKeyRef = nil
@@ -465,6 +494,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
       UnregisterEventHotKey(translateHotKeyRef)
       self.translateHotKeyRef = nil
     }
+  }
+
+  private func registerHotKey() {
+    suspendHotKeys()
 
     if eventHandlerRef == nil {
       var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -551,14 +584,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
   private func setHotKey(_ shortcut: HotKeyPreference) {
     if shortcut == hotKey {
-      updateStatus(LocalizedText.tr(.shortcutEnabled, hotKey.displayText), kind: .ready)
+      registerHotKey()
       return
     }
     guard shortcut != translateHotKey else {
+      registerHotKey()
       updateStatus(LocalizedText.tr(.invalidShortcut), kind: .warning)
       return
     }
     guard canRegisterHotKey(shortcut, signature: "FSOC", id: 1) else {
+      registerHotKey()
       updateStatus(LocalizedText.tr(.invalidShortcut), kind: .warning)
       return
     }
@@ -570,14 +605,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
   private func setTranslationHotKey(_ shortcut: HotKeyPreference) {
     if shortcut == translateHotKey {
-      updateStatus(LocalizedText.tr(.shortcutEnabled, hotKey.displayText), kind: .ready)
+      registerHotKey()
       return
     }
     guard shortcut != hotKey else {
+      registerHotKey()
       updateStatus(LocalizedText.tr(.invalidShortcut), kind: .warning)
       return
     }
     guard canRegisterHotKey(shortcut, signature: "FSTR", id: 2) else {
+      registerHotKey()
       updateStatus(LocalizedText.tr(.invalidShortcut), kind: .warning)
       return
     }
@@ -591,7 +628,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let now = Date()
     guard now.timeIntervalSince(lastCaptureTime) >= captureDebounceInterval else { return }
     lastCaptureTime = now
-    closePopover()
+    menuBarPanelController.close()
 
     captureScreenSelection { [weak self] image in
       self?.recognizeImageToClipboard(image, sourceKind: .regionOCR)
@@ -602,7 +639,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let now = Date()
     guard now.timeIntervalSince(lastCaptureTime) >= captureDebounceInterval else { return }
     lastCaptureTime = now
-    closePopover()
+    menuBarPanelController.close()
 
     captureScreenSelection { [weak self] image in
       self?.presentTranslationPreview(for: image)
@@ -687,15 +724,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     updateStatus(LocalizedText.tr(.needPermissionStatus), kind: .warning)
-    hudController.present(.permissionRequired(eventID: UUID()))
 
-    if !AppPreferences.didRequestScreenCapturePermission {
+    if !hasRequestedScreenCaptureInProcess {
+      hasRequestedScreenCaptureInProcess = true
       AppPreferences.didRequestScreenCapturePermission = true
       if CGRequestScreenCaptureAccess() {
+        updateStatus(LocalizedText.tr(.shortcutEnabled, hotKey.displayText), kind: .ready)
         return true
       }
     }
 
+    hudController.hideImmediately()
     showScreenCapturePermissionAlert()
     return false
   }
@@ -846,6 +885,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     window.title = LocalizedText.tr(.translateSelection)
     window.toolbarStyle = .unified
     window.minSize = NSSize(width: 680, height: 460)
+    window.isReleasedWhenClosed = false
     window.center()
     window.contentViewController = NSHostingController(
       rootView: TranslationStudioView(
@@ -901,7 +941,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let hasVisibleWindow =
       (settingsWindow?.isVisible == true) ||
       (translationWindow?.isVisible == true) ||
-      popover.isShown
+      menuBarPanelController.isVisible
 
     let isBusy =
       isRunningCapture ||

@@ -43,7 +43,7 @@ Yamazaki is a free, local, native macOS menu-bar utility for region OCR and scre
   <img src="docs/images/product-screenshot.jpg" alt="Yamazaki native macOS settings" width="72%">
 </p>
 
-Current version: `0.8.0`.
+Current version: `0.8.1`.
 
 ## Features
 

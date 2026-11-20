@@ -258,6 +258,7 @@ private struct HotKeySettingsPane: View {
           },
           onCancelRecording: {
             isRecordingShortcut = false
+            actions.cancelShortcutRecording()
           },
           onShortcut: actions.setShortcut,
           onInvalidShortcut: actions.invalidShortcut,
@@ -278,6 +279,7 @@ private struct HotKeySettingsPane: View {
           },
           onCancelRecording: {
             isRecordingTranslationShortcut = false
+            actions.cancelShortcutRecording()
           },
           onShortcut: actions.setTranslationShortcut,
           onInvalidShortcut: actions.invalidShortcut,
@@ -705,26 +707,47 @@ final class ShortcutRecorderView: NSView {
   var onInvalidShortcut: (() -> Void)?
   var onCancel: (() -> Void)?
   private var isRecording = false
+  private var keyMonitor: Any?
 
   override var acceptsFirstResponder: Bool { true }
 
   func beginRecording() {
+    guard !isRecording else { return }
     isRecording = true
     window?.makeFirstResponder(self)
+    installKeyMonitor()
   }
 
   func stopRecording() {
     isRecording = false
+    removeKeyMonitor()
   }
 
-  override func keyDown(with event: NSEvent) {
-    guard isRecording else {
-      super.keyDown(with: event)
-      return
+  deinit {
+    if let keyMonitor {
+      NSEvent.removeMonitor(keyMonitor)
     }
+  }
 
+  private func installKeyMonitor() {
+    removeKeyMonitor()
+    keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+      guard let self, self.isRecording else { return event }
+      self.handleRecordedEvent(event)
+      return nil
+    }
+  }
+
+  private func removeKeyMonitor() {
+    if let keyMonitor {
+      NSEvent.removeMonitor(keyMonitor)
+      self.keyMonitor = nil
+    }
+  }
+
+  private func handleRecordedEvent(_ event: NSEvent) {
     if event.keyCode == UInt16(kVK_Escape) {
-      isRecording = false
+      stopRecording()
       onCancel?()
       return
     }
@@ -735,7 +758,7 @@ final class ShortcutRecorderView: NSView {
       return
     }
 
-    isRecording = false
+    stopRecording()
     onShortcut?(shortcut)
   }
 }

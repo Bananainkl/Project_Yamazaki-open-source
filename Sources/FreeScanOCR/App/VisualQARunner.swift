@@ -19,6 +19,7 @@ enum VisualQARunner {
     let noopActions = SettingsActions(
       startShortcutRecording: {},
       startTranslationShortcutRecording: {},
+      cancelShortcutRecording: {},
       setShortcut: { _ in },
       setTranslationShortcut: { _ in },
       resetDefaultShortcut: {},
@@ -63,8 +64,8 @@ enum VisualQARunner {
     )
 
     await snapshotWindow(
-      rootView: MenuBarPanelView(model: model, actions: noopActions, onDismissPanel: {}),
-      size: NSSize(width: 368, height: 448),
+      rootView: MenuBarPanelView(model: model, actions: noopActions),
+      size: nil,
       appearanceName: .darkAqua,
       titled: false,
       to: outputDir.appendingPathComponent("02-menubar-populated-dark.png")
@@ -191,11 +192,13 @@ enum VisualQARunner {
       defer: false
     )
     window.appearance = NSAppearance(named: appearanceName)
+    window.isReleasedWhenClosed = false
     if titled {
       window.title = title
       window.toolbarStyle = .unified
     } else {
-      window.backgroundColor = .windowBackgroundColor
+      window.backgroundColor = .clear
+      window.isOpaque = false
     }
     window.contentViewController = controller
     if let size {
@@ -205,6 +208,9 @@ enum VisualQARunner {
       window.setContentSize(controller.view.fittingSize)
     }
     window.makeKeyAndOrderFront(nil)
+    if !titled {
+      window.makeFirstResponder(nil)
+    }
     NSApp.activate(ignoringOtherApps: true)
 
     try? await Task.sleep(for: .milliseconds(360))
